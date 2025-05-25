@@ -234,29 +234,32 @@ test.cpp:
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
-// Mock-класс для Account
+
+
 class MockAccount : public Account {
 public:
-    MockAccount(int id, int balance) : Account(id, balance) {}
+    MockAccount(int id, int balance):Account(id, balance){};
     MOCK_METHOD(void, Unlock, ());
     MOCK_METHOD(void, Lock, ());
     MOCK_METHOD(int, id, (), (const));
-    MOCK_METHOD(void, ChangeBalance, (int diff));
-    MOCK_METHOD(int, GetBalance, ());
+    MOCK_METHOD(void, ChangeBalance, (int diff), ());
+    MOCK_METHOD(int, GetBalance, (), ());
 };
 
-// Mock-класс для Transaction
-class MockTransaction : public Transaction {
+class MockTransaction: public Transaction {
 public:
-    MOCK_METHOD(bool, Make, (Account& from, Account& to, int sum));
-    MOCK_METHOD(void, set_fee, (int fee));
-    MOCK_METHOD(int, fee, ());
+    MOCK_METHOD(bool, Make, (Account& from, Account& to, int sum), ());
+    MOCK_METHOD(void, set_fee, (int fee), ());
+    MOCK_METHOD(int, fee, (), ());
 };
 
-// Тесты для Account
 TEST(Account, Balance_ID_Change) {
     MockAccount acc(1, 100);
-    // Проверки вызовов методов
+    EXPECT_CALL(acc, GetBalance()).Times(3);
+    EXPECT_CALL(acc, Lock()).Times(1);
+    EXPECT_CALL(acc, Unlock()).Times(1);
+    EXPECT_CALL(acc, ChangeBalance(testing::_)).Times(2);
+    EXPECT_CALL(acc, id()).Times(1);
     acc.GetBalance();
     acc.id();
     acc.Unlock();
@@ -265,6 +268,7 @@ TEST(Account, Balance_ID_Change) {
     acc.ChangeBalance(2);
     acc.GetBalance();
     acc.Lock();
+    //EXPECT_EQ(acc.GetBalance(), 100);
 }
 
 TEST(Account, Balance_ID_Change_2) {
@@ -277,12 +281,17 @@ TEST(Account, Balance_ID_Change_2) {
     acc.Unlock();
 }
 
-// Тесты для Transaction
 TEST(Transaction, TransTest) {
     MockTransaction trans;
-    MockAccount first(1, 100), second(2, 250);
-    MockAccount flat_org(3, 10000), org(4, 5000);
-    
+    MockAccount first(1, 100);
+    MockAccount second(2, 250);
+    MockAccount flat_org(3, 10000);
+    MockAccount org(4, 5000);
+    EXPECT_CALL(trans, set_fee(testing::_)).Times(1);
+    EXPECT_CALL(trans, fee()).Times(1);
+    EXPECT_CALL(trans, Make(testing::_, testing::_, testing::_)).Times(2);
+    EXPECT_CALL(first, GetBalance()).Times(1);
+    EXPECT_CALL(second, GetBalance()).Times(1);
     trans.set_fee(300);
     trans.Make(first, second, 2000);
     trans.fee();
@@ -290,6 +299,8 @@ TEST(Transaction, TransTest) {
     second.GetBalance();
     trans.Make(org, first, 1000);
 }
+
+
 '''
 ```
 3. Настройте сборочную процедуру на **TravisCI**.
@@ -301,48 +312,81 @@ TEST(Transaction, TransTest) {
 └─$ touch .github/workflows/main.yml
 main.yml:
 '''
-name: bank
+name: CMake with Coverage
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  BUILD_TYPE: Release
 
 jobs:
-  BuildProject:
-    runs-on: ubuntu-latest
+  build-and-test:
+    runs-on: ubuntu-24.04
+    
     steps:
-      - uses: actions/checkout@v2
-      - name: Build banking library
-        run: |
-          cd banking
-          cmake -H. -B_build
-          cmake --build _build
-
-  Testing:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Setup environment
-        run: |
-          git submodule update --init
-          sudo apt install lcov g++-9
-      - name: Run tests
-        run: |
-          mkdir _build && cd _build
-          CXX=/usr/bin/g++-9 cmake -DCOVERAGE=1 ..
-          cmake --build .
-          ./RunTest
-          lcov -t "banking" -o lcov.info -c -d .
-      - name: Upload coverage (initial)
-        uses: coverallsapp/github-action@master
-        with:
-          github-token: ${{ secrets.github_token }}
-          path-to-lcov: ./_build/lcov.info
-      - name: Upload coverage (final)
-        uses: coverallsapp/github-action@master
-        with:
-          github-token: ${{ secrets.github_token }}
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-9 lcov cmake
+        
+    - name: Create build directory
+      run: mkdir -p _build
+      
+    - name: Configure CMake
+      working-directory: _build
+      run: |
+        CXX=/usr/bin/g++-9 cmake -DCOVERAGE=ON -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} ..
+        
+    - name: Build project
+      working-directory: _build
+      run: cmake --build . --config ${{env.BUILD_TYPE}}
+      
+    - name: Run tests
+      working-directory: _build
+      run: ./RunTest
+      
+    - name: Generate coverage report
+      working-directory: _build
+      run: |
+        # Генерация coverage с игнорированием всех известных проблем
+        lcov --capture \
+             --directory . \
+             --output-file coverage.info \
+             --ignore-errors mismatch,unused \
+             --rc branch_coverage=1 \
+             --rc geninfo_unexecuted_blocks=1
+        
+        # Фильтрация результатов
+        lcov --remove coverage.info \
+             '/usr/*' \
+             '*/googletest/*' \
+             '*/test/*' \
+             '*/gtest/*' \
+             '*/gmock/*' \
+             --output-file filtered.info \
+             --ignore-errors unused
+        
+        # Генерация HTML отчета
+        genhtml --branch-coverage \
+                --title "Test Coverage" \
+                --output-directory coverage \
+                filtered.info \
+                --ignore-errors unmapped,unused
+        
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: _build/coverage
 '''
 ```
 4. Настройте [Coveralls.io](https://coveralls.io/).
